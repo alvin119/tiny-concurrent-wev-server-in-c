@@ -1,0 +1,16 @@
+# 編譯產物
+*.o
+*.out
+tiny_server
+
+# 測試用上傳檔案（如果之後有實作的話）
+uploads/
+
+# 編輯器 / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# WSL / Linux 系統
+.DS_Store

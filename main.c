@@ -57,6 +57,21 @@ int main(){
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
         printf("Connection from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
 
+        char buf[4096];
+        memset(buf, 0, sizeof(buf));
+        // read() 是 POSIX 系統呼叫，用來從：檔案, socket, pipe, 裝置讀取資料。
+        // ssize_t read(int fd, void *buf, size_t count);
+        ssize_t n = read(conn_fd, buf, sizeof(buf) - 1); // -1 是因為 C 字串最後需要一個 '\0'
+        if (n > 0) {
+            printf("---- Raw Request (%zd bytes) ----\n", n);
+            printf("%s", buf);
+            printf("---------------------------------\n");
+        }
+
+        // parse http Request
+        char method[16], path[1024], version[16];
+        sscanf(buf, "%s %s %s", method, path, version);
+        printf("Method: %s | Path: %s | Version: %s\n", method, path, version);
         close(conn_fd);
     }
 
