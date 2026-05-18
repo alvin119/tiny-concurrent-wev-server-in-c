@@ -13,6 +13,34 @@ server: getaddrinfo => socket => bind => listen => accept
 #include <netinet/in.h>   // struct sockaddr_in
 
 #define PORT 8080
+
+// int sscanf(const char *str, const char *format, ...);
+// String Scan Formatted => sscanf
+// int sscanf(const char *str, const char *format, ...);
+// return 成功放入幾個
+
+// return 0 表示成功，return -1 表示失敗
+int parse_request(const char *buf, char *method, char *path){
+    if(sscanf(buf, "%15s %1023s", method, path) != 2){
+        return -1;
+    }
+    return 0;
+}
+
+void send_response(int fd, int status_code, const char *status_text, const char *content_type, const char *body){
+    char header[1024];
+    int body_len = strlen(body);
+    int header_len = snprintf(header, sizeof(header), 
+        "HTTP/1.0 %d %s\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %d\r\n"
+        "\r\n",
+        status_code, status_text, content_type, body_len
+    );
+    write(fd, header, header_len);
+    write(fd, body, body_len);
+}
+
 int main(){
     printf("Starting server on port: %d\n", PORT);
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -24,6 +52,7 @@ int main(){
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
+    // bind
     struct sockaddr_in addr;
     // void *memset(void *ptr, int value, size_t num); ptr 指向要設定的 memory 起始位置
     memset(&addr, 0, sizeof(addr)); // 將 struct sockaddr_in 裡沒用到的欄位都設為0
@@ -69,9 +98,24 @@ int main(){
         }
 
         // parse http Request
-        char method[16], path[1024], version[16];
-        sscanf(buf, "%s %s %s", method, path, version);
-        printf("Method: %s | Path: %s | Version: %s\n", method, path, version);
+        char method[16], path[1024];
+        // parse 失敗
+        if(parse_request(buf, method, path) < 0){
+            send_response(conn_fd, 400, "Bad Request", "text/plain", "400 Bad Request");
+            close(conn_fd);
+            continue;
+        }
+
+        if (strcmp(method, "GET") != 0) {
+            send_response(conn_fd, 405, "Method Not Allowed",
+                        "text/plain", "405 Method Not Allowed");
+            close(conn_fd);
+            continue;
+        }
+
+        send_response(conn_fd, 200, "OK", "text/html", "<h1>Hello from Tiny Server!</h1>");
+
+
         close(conn_fd);
     }
 
