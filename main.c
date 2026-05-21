@@ -15,6 +15,8 @@ server: getaddrinfo => socket => bind => listen => accept
 #include <arpa/inet.h> // htonl
 #include <sys/socket.h> // socket(), bind(), listne()...
 #include <netinet/in.h>   // struct sockaddr_in
+#include <sys/wait.h> // waitpid
+#include <pthread.h>
 
 #define PORT 8080
 
@@ -125,8 +127,18 @@ void sigchld_handler(int sig) {
     // 用 waitpid 回收所有 zombie
     while(waitpid(-1, NULL, WNOHANG) > 0);
 }
+struct request_info{
+    int conn_fd;
+    char path[1024];
+};
+void *handle_request(void *arg){
+    struct request_info *tmp = (struct request_info *)arg;
 
-void 
+    serve_static_file(tmp->path, tmp->conn_fd);
+    close(tmp->conn_fd);
+    free(arg);
+    return NULL;
+}
 
 int main(){
     printf("Starting server on port: %d\n", PORT);
@@ -203,26 +215,14 @@ int main(){
             continue;
         }
 
-        pid_t pid = fork();
-        if(pid == 0){
-            // child process
-            close(server_fd);
-            serve_static_file(path, conn_fd);
-            close(conn_fd);
-            exit(0);
-        }else if(pid > 0){
-            // parent process
-            close(conn_fd);
-            continue;
-        }else{
-            // 小於 0，系統沒資源
-            perror("fork");
-            close(conn_fd);
-        }
         
+        struct request_info *info = malloc(sizeof(struct request_info));
+        info->conn_fd = conn_fd;
+        strncpy(info->path, path, sizeof(info->path)-1);
+        pthread_t tid;
+        pthread_create(&tid, NULL, handle_request, info);
+        pthread_detach(tid);
     }
-
-    
     return 0;
 }
 
