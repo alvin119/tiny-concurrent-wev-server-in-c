@@ -242,7 +242,7 @@ int main(){
     pool_init();
     pthread_t workers[POOL_SIZE];
     for(int i =0; i < POOL_SIZE; i++){
-        pthread_create(&workers[i], NULL, worker, NULL);
+        pthread_create(&workers[i], NULL, worker, NULL); // 開始執行 worker()，剛開始會被 pool_pop 的 semaphore wait 卡住
         pthread_detach(workers[i]);
     }
 

@@ -1,3 +1,4 @@
+// epoll version
 /*
 client: getaddrinfo => socket => connect
 server: getaddrinfo => socket => bind => listen => accept
@@ -15,10 +16,13 @@ server: getaddrinfo => socket => bind => listen => accept
 #include <arpa/inet.h> // htonl
 #include <sys/socket.h> // socket(), bind(), listne()...
 #include <netinet/in.h>   // struct sockaddr_in
-#include <sys/wait.h> // waitpid
-#include <pthread.h>
+#include <sys/epoll.h>
 
 #define PORT 8080
+#define MAX_EVENTS 64
+
+struct epoll_event events[MAX_EVENTS];
+
 
 // int sscanf(const char *str, const char *format, ...);
 // String Scan Formatted => sscanf
@@ -85,6 +89,7 @@ void serve_static_file(const char *uri, int conn_fd){
     uri_to_path(uri, path, sizeof(path));
     if(path[0] == '\0'){
         send_response(conn_fd, 400, "Bad Request", "text/plain", "400 Bad Request");
+        return;
     }
     
     // 確認 path 有沒有檔案，是不是 dir
@@ -123,25 +128,11 @@ void serve_static_file(const char *uri, int conn_fd){
     close(file_fd);
 }
 
-void sigchld_handler(int sig) {
-    // 用 waitpid 回收所有 zombie
-    while(waitpid(-1, NULL, WNOHANG) > 0);
-}
-struct request_info{
-    int conn_fd;
-    char path[1024];
-};
-void *handle_request(void *arg){
-    struct request_info *tmp = (struct request_info *)arg;
 
-    serve_static_file(tmp->path, tmp->conn_fd);
-    close(tmp->conn_fd);
-    free(arg);
-    return NULL;
-}
 
 int main(){
     printf("Starting server on port: %d\n", PORT);
+    // socket()
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if(server_fd < 0){
         perror("socket");
@@ -151,7 +142,7 @@ int main(){
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
-    // bind
+    // bind()
     struct sockaddr_in addr;
     // void *memset(void *ptr, int value, size_t num); ptr 指向要設定的 memory 起始位置
     memset(&addr, 0, sizeof(addr)); // 將 struct sockaddr_in 裡沒用到的欄位都設為0
@@ -164,66 +155,95 @@ int main(){
     }
     printf("Bind ok\n");
     
-    //listen
+    //listen()
     if(listen(server_fd, 10) < 0){
         perror("listen");
         exit(1);
     }
 
-    // signal: 傳送通知給 process，告訴 os handler 在哪
-    signal(SIGCHLD, sigchld_handler);
-    // accept
-    while(1){
-        struct sockaddr_in client_addr;
-        socklen_t client_len = sizeof(client_addr);
-        int conn_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
-        // accept()會把連到線的 client IP addr 和 Port 存到 client_addr memory
-        // 然後把寫入了多少 bytes 寫到 client_len
-        // 因此 client_addr, client_len 放入時都要取址
-        if(conn_fd < 0){
-            perror("accept");
-            continue;
-        }
-        char client_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
-        printf("Connection from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
+    // 建立 epoll 監控清單
+    int epfd = epoll_create1(0);
+    if(epfd < 0){
+        perror("epoll create");
+        exit(1);
+    }
+    // 設定 event 類型跟 fd 
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = server_fd;
 
-        char buf[4096];
-        memset(buf, 0, sizeof(buf));
-        // read() 是 POSIX 系統呼叫，用來從：檔案, socket, pipe, 裝置讀取資料。
-        // ssize_t read(int fd, void *buf, size_t count);
-        ssize_t n = read(conn_fd, buf, sizeof(buf) - 1); // -1 是因為 C 字串最後需要一個 '\0'
-        if (n > 0) {
-            printf("---- Raw Request (%zd bytes) ----\n", n);
-            printf("%s", buf);
-            printf("---------------------------------\n");
-        }
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, server_fd, &ev) < 0) {
+        perror("epoll_ctl");
+        exit(1);
+    }
 
-        // parse http Request
-        char method[16], path[1024];
-        // parse 失敗
-        if(parse_request(buf, method, path) < 0){
-            send_response(conn_fd, 400, "Bad Request", "text/plain", "400 Bad Request");
-            close(conn_fd);
-            continue;
-        }
-        // 只先處理 GET Request
-        if (strcmp(method, "GET") != 0) {
-            send_response(conn_fd, 405, "Method Not Allowed",
-                        "text/plain", "405 Method Not Allowed");
-            close(conn_fd);
-            continue;
-        }
-
+    while (1) {
+        int n = epoll_wait(epfd, events, MAX_EVENTS, -1); // n = ready 的 fd 數量
         
-        struct request_info *info = malloc(sizeof(struct request_info));
-        info->conn_fd = conn_fd;
-        strncpy(info->path, path, sizeof(info->path)-1);
-        pthread_t tid;
-        pthread_create(&tid, NULL, handle_request, info);
-        pthread_detach(tid);
+        for (int i = 0; i < n; i++) {
+            int fd = events[i].data.fd;
+            
+            if (fd == server_fd) {
+                // 有新連線進來
+                // 1. accept()
+                struct sockaddr_in client_addr;
+                socklen_t client_len = sizeof(client_addr);
+                int conn_fd = accept(fd, (struct sockaddr *)&client_addr, &client_len);
+                if(conn_fd < 0){
+                    perror("accept");
+                    continue;
+                }
+                
+                // 2. 把新的 conn_fd 加進 epoll 監控
+                struct epoll_event conn_ev;
+                conn_ev.events = EPOLLIN;
+                conn_ev.data.fd = conn_fd;
+                epoll_ctl(epfd, EPOLL_CTL_ADD, conn_fd, &conn_ev);
+            } else {
+                // 既有連線有資料進來
+                // 1. read()
+                char buf[4096];
+                memset(buf, 0, sizeof(buf));
+                // read() 是 POSIX 系統呼叫，用來從：檔案, socket, pipe, 裝置讀取資料。
+                // ssize_t read(int fd, void *buf, size_t count);
+                ssize_t n = read(fd, buf, sizeof(buf) - 1); // -1 是因為 C 字串最後需要一個 '\0'
+                if (n > 0) {
+                    printf("---- Raw Request (%zd bytes) ----\n", n);
+                    printf("%s", buf);
+                    printf("---------------------------------\n");
+                }
+                // n==0 代表 conn_fd 關閉連線
+                // n < 0 代表錯誤
+                else if(n <= 0){
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                    close(fd);
+                    continue;
+                }
+                
+                // 2. parse_request()
+                char method[16], path[1024];
+                // parse 失敗
+                if(parse_request(buf, method, path) < 0){
+                    send_response(fd, 400, "Bad Request", "text/plain", "400 Bad Request");
+                    close(fd);
+                    continue;
+                }
+                // 只先處理 GET Request
+                if (strcmp(method, "GET") != 0) {
+                    send_response(fd, 405, "Method Not Allowed",
+                                "text/plain", "405 Method Not Allowed");
+                    close(fd);
+                    continue;
+                }
+                // 3. serve_static_file()
+                serve_static_file(path, fd);
+                // 4. 從 epoll 移除這個 fd
+                epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+                // 5. close()
+                close(fd);            
+            }
+        }
     }
     return 0;
 }
-
 
