@@ -1,51 +1,46 @@
 #!/bin/bash
-# benchmark.sh
+# remote_benchmark.sh
+# 在筆電執行，RPi 那邊要手動啟動對應的 server
 
-VERSIONS=("tiny_sequential" "tiny_process" "tiny_thread" "tiny_pool" "tiny_epoll")
-CONCURRENCIES=(1 10 100)
-REQUESTS=1000
+RPI_IP="10.184.167.218"
 PORT=8080
-RESULT_FILE="benchmark_results.txt"
+REQUESTS=1000
+CONCURRENCIES=(1 10 100)
+RESULT_FILE="remote_benchmark_results.txt"
 
-echo "Tiny Server Benchmark — $(date)" > $RESULT_FILE
+echo "Remote Benchmark — $(date)" > $RESULT_FILE
+echo "RPi IP: $RPI_IP" >> $RESULT_FILE
 echo "========================================" >> $RESULT_FILE
 
-for version in "${VERSIONS[@]}"; do
-    echo ""
-    echo ">>> 測試 $version"
-
-    # 啟動 server
-    ./$version &
-    SERVER_PID=$!
-    sleep 1  # 等 server 起來
-
+run_bench() {
+    local version=$1
     echo "" >> $RESULT_FILE
     echo "[ $version ]" >> $RESULT_FILE
 
     for c in "${CONCURRENCIES[@]}"; do
-        echo "  並發 $c ..."
         echo "  -n $REQUESTS -c $c" >> $RESULT_FILE
-
-        ab -n $REQUESTS -c $c -s 10 -q http://localhost:$PORT/ 2>&1 \
+        ab -n $REQUESTS -c $c -q http://$RPI_IP:$PORT/ 2>&1 \
             | grep -E "Requests per second|Time per request|Failed requests" \
             >> $RESULT_FILE
-
         echo "" >> $RESULT_FILE
-        sleep 0.3
-    done
-
-    # 關掉 server
-    kill $SERVER_PID 2>/dev/null
-    wait $SERVER_PID 2>/dev/null
-    for i in $(seq 1 10); do
-        if ! lsof -i :$PORT > /dev/null 2>&1; then
-            break
-        fi
         sleep 0.5
     done
-    sleep 1  # 等 port 釋放
+}
+
+echo "請在 RPi 上啟動 server，然後按 Enter 繼續..."
+echo ""
+
+for version in tiny_sequential tiny_process tiny_thread tiny_pool tiny_epoll; do
+    echo ">>> 請在 RPi 上執行：./$version"
+    echo "    啟動後按 Enter 開始測試，測完會提示你換下一個"
+    read -p "    Ready? " 
+    
+    run_bench $version
+    
+    echo "    測試完成，請在 RPi 上 Ctrl+C 關掉 server"
+    read -p "    關掉後按 Enter 繼續下一個..."
 done
 
 echo ""
-echo "完成！結果存在 $RESULT_FILE"
+echo "全部完成！"
 cat $RESULT_FILE
